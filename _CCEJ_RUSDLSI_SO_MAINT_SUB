@@ -88,6 +88,19 @@
 * Change Request     : 8000013887                                      *
 * Change Description : to reduce the Performance issues                *
 *----------------------------------------------------------------------*
+* Mod No.            : MOD-021                                         *
+* Date               : 24-Jul-2026                                     *
+* Change Description : Performance remediation to resolve report       *
+* timeout: removed explicit SORTs made redundant by the SORTED TABLE    *
+* declarations in the TOP include (I_VBAK/I_VBAP/I_VBPA/I_KNA1/        *
+* I_VBUV/I_VBRP/I_VBKD/I_VBEP/I_VBUP/I_MAKT/I_STXH/I_KONV/I_A595/       *
+* I_KNVV/I_VBFA/I_VBFA_SHIP/I_LIPS/I_VTTK/I_T42); de-duplicated the     *
+* driving table for the LIPS FOR ALL ENTRIES select; removed unused    *
+* I_LIKP/I_VBRK objects; modernized CREATE OBJECT/CALL METHOD to       *
+* inline/functional call syntax; documented previously-empty error     *
+* branches. No change to selection logic, business calculations or    *
+* ALV output.                                                          *
+*----------------------------------------------------------------------*
 *&---------------------------------------------------------------------*
 *&  Include           /CCEJ/RDSDSLSR_SO_MAINT_SUB
 *&---------------------------------------------------------------------*
@@ -464,11 +477,15 @@ FORM f_get_data .
          l_wa_vbtyp LIKE LINE OF l_r_vbtyp," MOD-003
          l_v_tabix TYPE sytabix,
 *        BOC MOD-008
-         l_i_lips TYPE STANDARD TABLE OF ty_lips,
 *        EOC MOD-008
 *--Start of addition for MOD-010
-         l_i_partner TYPE STANDARD TABLE OF ty_partner.
+         l_i_partner TYPE STANDARD TABLE OF ty_partner,
 *--End of addition for MOD-010
+*        MOD-021: de-duplicated (VBELN/POSNN) driver for the LIPS
+*        FOR ALL ENTRIES below, kept separate from l_i_vbfa since that
+*        table is still needed with its own VBELN-only de-duplication
+*        for the VBFA_SHIP select right after it.
+         l_i_vbfa_lips TYPE STANDARD TABLE OF ty_vbfa.
   FIELD-SYMBOLS : <l_fs_vbak> TYPE ty_vbak.
 
 *BOC for MOD-015
@@ -780,8 +797,7 @@ FROM V_KONV_CDS
           WHERE kunnr = l_i_vbak-kunnr.
 **          if values found
         IF sy-subrc IS INITIAL.
-**          sort the table values
-          SORT i_knvv BY kunnr.
+**          i_knvv is a SORTED TABLE (key KUNNR) - already in order
         ELSE.
           CLEAR: i_knvv[].
         ENDIF.
@@ -824,9 +840,8 @@ FROM V_KONV_CDS
          FOR ALL ENTRIES IN i_vbak
          WHERE vbelv = i_vbak-vbeln
          AND vbtyp_n IN l_r_vbtyp.
-        IF sy-subrc IS INITIAL.
-          SORT i_vbfa.
-        ENDIF.
+*        i_vbfa is a SORTED TABLE (key VBELV VBTYP_N POSNV POSNN)
+*        - already in order, no explicit SORT needed
 
 **fetch shipment related values
         CLEAR: l_i_vbfa[].
@@ -851,15 +866,23 @@ FROM V_KONV_CDS
         IF l_i_vbfa[] IS NOT INITIAL.
 *Begin of Insert MOD-020
 *get the quantities from lips
+*        MOD-021: de-duplicate the driving table on the exact fields
+*        used in the WHERE clause (VBELN/POSNN) before FOR ALL ENTRIES,
+*        so the DB does not get redundant OR-conditions for order
+*        items that share the same delivery/delivery-item combination.
+          l_i_vbfa_lips[] = l_i_vbfa[].
+          SORT l_i_vbfa_lips BY vbeln posnn.
+          DELETE ADJACENT DUPLICATES FROM l_i_vbfa_lips
+                                     COMPARING vbeln posnn.
           SELECT vbeln
           posnr
           lfimg
           vgpos
           FROM lips
           INTO TABLE i_lips
-          FOR ALL ENTRIES IN l_i_vbfa
-          WHERE vbeln = l_i_vbfa-vbeln
-          AND posnr = l_i_vbfa-posnn.
+          FOR ALL ENTRIES IN l_i_vbfa_lips
+          WHERE vbeln = l_i_vbfa_lips-vbeln
+          AND posnr = l_i_vbfa_lips-posnn.
           IF sy-subrc IS NOT INITIAL.
             CLEAR:i_lips[].
           ENDIF.
@@ -878,7 +901,8 @@ FROM V_KONV_CDS
            WHERE vbelv = l_i_vbfa-vbeln
            AND vbtyp_n = l_c_8.
           IF sy-subrc IS INITIAL.
-            SORT i_vbfa_ship.
+*           i_vbfa_ship is a SORTED TABLE (key VBELV VBTYP_N)
+*           - already in order, no explicit SORT needed
             IF i_vbfa_ship[] IS NOT INITIAL.
 " *****Code Remediation changes S4 2025_S Conversion **begin of change by EJX9007360 2026.06.09 ATC
 * SELECT tknum
@@ -894,9 +918,7 @@ FROM V_KONV_CDS
                 FOR ALL ENTRIES IN i_vbfa_ship
                 WHERE tknum = i_vbfa_ship-vbeln.
 " *****Code Remediation changes S4 2025_S Conversion **end of change by EJX9007360 2026.06.09 ATC
-              IF sy-subrc IS INITIAL.
-                SORT i_vttk BY tknum.
-              ENDIF.
+*             i_vttk is a SORTED TABLE (key TKNUM) - already in order
 
             ENDIF.
 
@@ -1022,9 +1044,7 @@ FROM V_KONV_CDS
         INTO TABLE i_t42
         FOR ALL ENTRIES IN l_i_vbpa
         WHERE zkzkunnrfnb = l_i_vbpa-kunnr.
-        IF sy-subrc IS INITIAL.
-          SORT i_t42 BY zkzkunnrfnb.
-        ENDIF.
+*       i_t42 is a SORTED TABLE (key ZKZKUNNRFNB) - already in order
 *    End of change in MOD-019
       ENDIF.
 
@@ -1121,9 +1141,8 @@ FROM V_KONV_CDS
       WHERE vbeln EQ i_vbak-vbeln.
     IF sy-subrc IS NOT INITIAL.
       CLEAR: i_vbuv[].
-    ELSEIF sy-subrc IS INITIAL.
-      SORT i_vbuv BY vbeln posnr.
     ENDIF.
+*   i_vbuv is a SORTED TABLE (key VBELN POSNR) - already in order
 
 
 **fetch Billing header details
@@ -1171,9 +1190,7 @@ FROM V_KONV_CDS
          FOR ALL ENTRIES IN l_i_vbfa
          WHERE vbeln = l_i_vbfa-vbeln.
 *End of insert MOD-020
-        IF sy-subrc IS INITIAL.
-          SORT i_vbrp BY vbeln posnr.
-        ENDIF.
+*       i_vbrp is a SORTED TABLE (key VBELN POSNR) - already in order
 *        ENDIF.  --MOD-020
       ENDIF.
     ENDIF.
@@ -1209,13 +1226,13 @@ FORM f_grid_display .
   i_final[] = i_alv[].
 
   TRY.
-      CALL METHOD cl_salv_table=>factory
+      cl_salv_table=>factory(
         EXPORTING
           list_display = if_salv_c_bool_sap=>false
         IMPORTING
           r_salv_table = o_table
         CHANGING
-          t_table      = i_final.
+          t_table      = i_final ).
 
     CATCH cx_salv_msg INTO l_o_exc.
       l_v_exc_msg = l_o_exc->get_text( ).
@@ -1366,7 +1383,7 @@ FORM f_process_data .
 
   DATA:l_o_wi TYPE REF TO /ccej/cl_sls_util_sovalret,
        l_v_syno_dynpro TYPE /ccej/mdm_zkzdengrpcd.
-  CREATE OBJECT l_o_wi.
+  l_o_wi = NEW /ccej/cl_sls_util_sovalret( ).
 
 *-----Field Symbols
   FIELD-SYMBOLS : <l_fs_vbpa> TYPE ty_vbpa,
@@ -1392,8 +1409,6 @@ FORM f_process_data .
 **                  EOC Y S172466 MOD-003 Defcet 1813
                    <l_fs_vbak> TYPE ty_vbak," MOD-004
 *                  BOC MOD-008
-                   <l_fs_likp> TYPE ty_likp,
-                   <l_fs_vbrk> TYPE ty_vbrk,
                    <l_fs_vbrp> TYPE ty_vbrp,
 *                  EOC MOD-008
 *--Start of addition for MOD-010
@@ -1427,32 +1442,13 @@ FORM f_process_data .
   ENDIF.
 *  End of MOD-009 for defect 3146
 
-**  sorting of various tables
-  SORT i_vbap BY vbeln posnr.
-  SORT i_vbak BY vbeln.
-  SORT i_konv BY knumv kposn kschl.
-  SORT i_a595 BY knumh.
-**   BOC BY S172466 MOD-007 Defcet 3044
-*  SORT i_vbep BY vbeln posnr.
-  SORT i_vbep BY vbeln posnr etenr.
-**   EOC BY S172466 MOD-007 Defect 3044
-*--Start of commenting for MOD-010
-*  SORT i_vbpa BY vbeln posnr.
-*--End of commenting for MOD-010
-*--Start of addition for MOD-010
-  SORT i_vbpa BY vbeln parvw.
-*--End of addition for MOD-010
-  SORT i_vbkd BY vbeln.
-  SORT i_kna1 BY kunnr.
-  SORT i_vbup BY vbeln posnr.
-  SORT i_makt BY matnr.
-  SORT i_stxh BY tdobject tdname tdid tdspras." MOD-001
-**  BOC BY S172466 MOD-003 Defect 1813
-  SORT i_knvv BY kunnr.
-  SORT i_vbfa BY vbelv vbtyp_n posnv posnn.
-  SORT i_vbfa_ship BY vbelv vbtyp_n.
-  SORT i_lips BY vbeln posnr vgpos.
-
+**  MOD-021: i_vbap, i_vbak, i_konv, i_a595, i_vbep, i_vbpa, i_vbkd,
+**  i_kna1, i_vbup, i_makt, i_stxh, i_knvv, i_vbfa, i_vbfa_ship and
+**  i_lips are all declared as SORTED TABLE on exactly the key used
+**  below/at the READ TABLE ... BINARY SEARCH call sites, so they are
+**  always in the required order as soon as they are filled - the
+**  explicit SORTs that used to run here (and are not even permitted
+**  on a SORTED table) have been removed.
 **  EOC BY S172466 MOD-003 Defect 1813
 ** BOC BY S172466 MOD-004
   CLEAR: l_i_vbeln[].
@@ -1516,7 +1512,10 @@ FORM f_process_data .
             wrong_access_to_archive = 1
             OTHERS                  = 2.
         IF sy-subrc <> 0.
-          " Error Handling
+*         Text read failed for this batch - continue without work
+*         instruction free-text for these orders rather than abort
+*         the whole report; ensure no partial data is carried forward.
+          CLEAR: l_i_text_tmp.
         ENDIF.
         APPEND LINES OF l_i_text_tmp TO l_i_text.
         CLEAR: l_i_text_tmp, l_i_name, l_v_lines.
@@ -1536,7 +1535,10 @@ FORM f_process_data .
         wrong_access_to_archive = 1
         OTHERS                  = 2.
     IF sy-subrc <> 0.
-      " Error Handling
+*     Text read failed for this final batch - continue without work
+*     instruction free-text for these orders rather than abort the
+*     whole report; ensure no partial data is carried forward.
+      CLEAR: l_i_text_tmp.
     ENDIF.
     APPEND LINES OF l_i_text_tmp TO l_i_text.
     CLEAR: l_i_text_tmp, l_i_name.
@@ -3204,7 +3206,7 @@ CLASS lcl_user_command IMPLEMENTATION.
     CALL FUNCTION 'GET_GLOBALS_FROM_SLVC_FULLSCR'
       IMPORTING
         e_grid = l_o_change.
-    CALL METHOD l_o_change->check_changed_data.
+    l_o_change->check_changed_data( ).
 
     FIELD-SYMBOLS: <l_fs_alv> TYPE ty_final_sel."ty_alv.
 * To get selected records for process-> using buttons *
@@ -3413,7 +3415,7 @@ FORM f_handle_ucomm .
           l_o_events        TYPE REF TO cl_salv_events_table.
 
   l_o_events = o_table->get_event( ).
-  CREATE OBJECT l_o_event_handler.
+  l_o_event_handler = NEW lcl_user_command( ).
   SET HANDLER l_o_event_handler->on_user_command FOR l_o_events.
 * register to the event DOUBLE CLICK
   SET HANDLER l_o_event_handler->on_double_click FOR l_o_events.
@@ -3656,7 +3658,7 @@ FORM f_get_syno_dynpro  USING    fp_vbeln TYPE vbeln
           l_v_vbeln    TYPE tdobname,
           l_v_lang     TYPE sylangu.
 
-  CREATE OBJECT l_o_wi.
+  l_o_wi = NEW /ccej/cl_sls_util_sovalret( ).
   FIELD-SYMBOLS: <l_fs_head> TYPE tline,
                  <l_fs_stxh> TYPE ty_stxh." MOD-001
 
@@ -3683,7 +3685,7 @@ FORM f_get_syno_dynpro  USING    fp_vbeln TYPE vbeln
 
 **  EOC BY S172466 MOD-001 ETE Defect 348
 
-  CALL METHOD l_o_wi->get_multiline_text
+  l_o_wi->get_multiline_text(
     EXPORTING
       im_txt_id    = c_txtid1     "YJCH
       im_txt_name  = l_v_vbeln      "Sales document number
@@ -3691,7 +3693,7 @@ FORM f_get_syno_dynpro  USING    fp_vbeln TYPE vbeln
       im_lang      = l_v_lang      " language
     IMPORTING
       ex_txt_table = l_i_head
-      ex_failure   = l_v_txt_fail.
+      ex_failure   = l_v_txt_fail ).
   IF NOT l_v_txt_fail IS INITIAL.   "failure of read_text
     CLEAR: l_i_head[].
   ENDIF.

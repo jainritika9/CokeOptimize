@@ -797,7 +797,8 @@ FROM V_KONV_CDS
           WHERE kunnr = l_i_vbak-kunnr.
 **          if values found
         IF sy-subrc IS INITIAL.
-**          i_knvv is a SORTED TABLE (key KUNNR) - already in order
+**          sort the table values
+          SORT i_knvv BY kunnr.
         ELSE.
           CLEAR: i_knvv[].
         ENDIF.
@@ -840,8 +841,9 @@ FROM V_KONV_CDS
          FOR ALL ENTRIES IN i_vbak
          WHERE vbelv = i_vbak-vbeln
          AND vbtyp_n IN l_r_vbtyp.
-*        i_vbfa is a SORTED TABLE (key VBELV VBTYP_N POSNV POSNN)
-*        - already in order, no explicit SORT needed
+        IF sy-subrc IS INITIAL.
+          SORT i_vbfa.
+        ENDIF.
 
 **fetch shipment related values
         CLEAR: l_i_vbfa[].
@@ -901,8 +903,7 @@ FROM V_KONV_CDS
            WHERE vbelv = l_i_vbfa-vbeln
            AND vbtyp_n = l_c_8.
           IF sy-subrc IS INITIAL.
-*           i_vbfa_ship is a SORTED TABLE (key VBELV VBTYP_N)
-*           - already in order, no explicit SORT needed
+            SORT i_vbfa_ship.
             IF i_vbfa_ship[] IS NOT INITIAL.
 " *****Code Remediation changes S4 2025_S Conversion **begin of change by EJX9007360 2026.06.09 ATC
 * SELECT tknum
@@ -918,7 +919,9 @@ FROM V_KONV_CDS
                 FOR ALL ENTRIES IN i_vbfa_ship
                 WHERE tknum = i_vbfa_ship-vbeln.
 " *****Code Remediation changes S4 2025_S Conversion **end of change by EJX9007360 2026.06.09 ATC
-*             i_vttk is a SORTED TABLE (key TKNUM) - already in order
+              IF sy-subrc IS INITIAL.
+                SORT i_vttk BY tknum.
+              ENDIF.
 
             ENDIF.
 
@@ -1044,7 +1047,9 @@ FROM V_KONV_CDS
         INTO TABLE i_t42
         FOR ALL ENTRIES IN l_i_vbpa
         WHERE zkzkunnrfnb = l_i_vbpa-kunnr.
-*       i_t42 is a SORTED TABLE (key ZKZKUNNRFNB) - already in order
+        IF sy-subrc IS INITIAL.
+          SORT i_t42 BY zkzkunnrfnb.
+        ENDIF.
 *    End of change in MOD-019
       ENDIF.
 
@@ -1141,8 +1146,9 @@ FROM V_KONV_CDS
       WHERE vbeln EQ i_vbak-vbeln.
     IF sy-subrc IS NOT INITIAL.
       CLEAR: i_vbuv[].
+    ELSEIF sy-subrc IS INITIAL.
+      SORT i_vbuv BY vbeln posnr.
     ENDIF.
-*   i_vbuv is a SORTED TABLE (key VBELN POSNR) - already in order
 
 
 **fetch Billing header details
@@ -1190,7 +1196,9 @@ FROM V_KONV_CDS
          FOR ALL ENTRIES IN l_i_vbfa
          WHERE vbeln = l_i_vbfa-vbeln.
 *End of insert MOD-020
-*       i_vbrp is a SORTED TABLE (key VBELN POSNR) - already in order
+        IF sy-subrc IS INITIAL.
+          SORT i_vbrp BY vbeln posnr.
+        ENDIF.
 *        ENDIF.  --MOD-020
       ENDIF.
     ENDIF.
@@ -1442,13 +1450,36 @@ FORM f_process_data .
   ENDIF.
 *  End of MOD-009 for defect 3146
 
-**  MOD-021: i_vbap, i_vbak, i_konv, i_a595, i_vbep, i_vbpa, i_vbkd,
-**  i_kna1, i_vbup, i_makt, i_stxh, i_knvv, i_vbfa, i_vbfa_ship and
-**  i_lips are all declared as SORTED TABLE on exactly the key used
-**  below/at the READ TABLE ... BINARY SEARCH call sites, so they are
-**  always in the required order as soon as they are filled - the
-**  explicit SORTs that used to run here (and are not even permitted
-**  on a SORTED table) have been removed.
+**  sorting of various tables
+**  MOD-022: restored (see MOD-022 log in TOP include) - these tables
+**  are STANDARD TABLE again, so they must be explicitly sorted here
+**  before the READ TABLE ... BINARY SEARCH calls below/later in this
+**  form can rely on their order.
+  SORT i_vbap BY vbeln posnr.
+  SORT i_vbak BY vbeln.
+  SORT i_konv BY knumv kposn kschl.
+  SORT i_a595 BY knumh.
+**   BOC BY S172466 MOD-007 Defcet 3044
+*  SORT i_vbep BY vbeln posnr.
+  SORT i_vbep BY vbeln posnr etenr.
+**   EOC BY S172466 MOD-007 Defect 3044
+*--Start of commenting for MOD-010
+*  SORT i_vbpa BY vbeln posnr.
+*--End of commenting for MOD-010
+*--Start of addition for MOD-010
+  SORT i_vbpa BY vbeln parvw.
+*--End of addition for MOD-010
+  SORT i_vbkd BY vbeln.
+  SORT i_kna1 BY kunnr.
+  SORT i_vbup BY vbeln posnr.
+  SORT i_makt BY matnr.
+  SORT i_stxh BY tdobject tdname tdid tdspras." MOD-001
+**  BOC BY S172466 MOD-003 Defect 1813
+  SORT i_knvv BY kunnr.
+  SORT i_vbfa BY vbelv vbtyp_n posnv posnn.
+  SORT i_vbfa_ship BY vbelv vbtyp_n.
+  SORT i_lips BY vbeln posnr vgpos.
+
 **  EOC BY S172466 MOD-003 Defect 1813
 ** BOC BY S172466 MOD-004
   CLEAR: l_i_vbeln[].
@@ -1479,49 +1510,49 @@ FORM f_process_data .
 *Begin of Insert MOD-020
   l_wa_name-sign = l_c_i.
   l_wa_name-option = l_c_eq.
-  LOOP AT i_vbak ASSIGNING <l_fs_vbak>.
-    IF <l_fs_vbak>-auart NOT IN i_jdc_auart.
-      l_wa_name-low = <l_fs_vbak>-vbeln.
-      APPEND l_wa_name TO l_i_name.
-      l_v_lines = l_v_lines + 1.
-      IF l_i_tdid IS INITIAL.
-        SELECT
-        sign
-        opti AS option
-        low
-        high
-        FROM tvarvc
-        INTO CORRESPONDING FIELDS OF TABLE l_i_tdid
-        WHERE name = /ccej/cl_sls_util_sovalret=>cc_ty_vnam
-        AND type = /ccej/cl_sls_util_sovalret=>cc_ty_kind.
-        IF sy-subrc <> 0.
-          " Error handling
-          EXIT.
+*  MOD-022: this range only depends on constants, not on the current
+*  <l_fs_vbak> row, so it is fetched once here, before the loop,
+*  instead of via a lazily-guarded SELECT lexically inside the LOOP
+*  below - avoids a SELECT statement inside a loop altogether.
+  SELECT
+  sign
+  opti AS option
+  low
+  high
+  FROM tvarvc
+  INTO CORRESPONDING FIELDS OF TABLE l_i_tdid
+  WHERE name = /ccej/cl_sls_util_sovalret=>cc_ty_vnam
+  AND type = /ccej/cl_sls_util_sovalret=>cc_ty_kind.
+  IF sy-subrc = 0.
+    LOOP AT i_vbak ASSIGNING <l_fs_vbak>.
+      IF <l_fs_vbak>-auart NOT IN i_jdc_auart.
+        l_wa_name-low = <l_fs_vbak>-vbeln.
+        APPEND l_wa_name TO l_i_name.
+        l_v_lines = l_v_lines + 1.
+        IF l_v_lines = 1000.
+          CALL FUNCTION 'READ_MULTIPLE_TEXTS'
+            EXPORTING
+              object                  = 'VBBK'
+              name_ranges             = l_i_name
+              id_ranges               = l_i_tdid
+            IMPORTING
+              text_table              = l_i_text_tmp
+*             ERROR_TABLE             =
+            EXCEPTIONS
+              wrong_access_to_archive = 1
+              OTHERS                  = 2.
+          IF sy-subrc <> 0.
+*           Text read failed for this batch - continue without work
+*           instruction free-text for these orders rather than abort
+*           the whole report; ensure no partial data is carried forward.
+            CLEAR: l_i_text_tmp.
+          ENDIF.
+          APPEND LINES OF l_i_text_tmp TO l_i_text.
+          CLEAR: l_i_text_tmp, l_i_name, l_v_lines.
         ENDIF.
       ENDIF.
-      IF l_v_lines = 1000.
-        CALL FUNCTION 'READ_MULTIPLE_TEXTS'
-          EXPORTING
-            object                  = 'VBBK'
-            name_ranges             = l_i_name
-            id_ranges               = l_i_tdid
-          IMPORTING
-            text_table              = l_i_text_tmp
-*           ERROR_TABLE             =
-          EXCEPTIONS
-            wrong_access_to_archive = 1
-            OTHERS                  = 2.
-        IF sy-subrc <> 0.
-*         Text read failed for this batch - continue without work
-*         instruction free-text for these orders rather than abort
-*         the whole report; ensure no partial data is carried forward.
-          CLEAR: l_i_text_tmp.
-        ENDIF.
-        APPEND LINES OF l_i_text_tmp TO l_i_text.
-        CLEAR: l_i_text_tmp, l_i_name, l_v_lines.
-      ENDIF.
-    ENDIF.
-  ENDLOOP.
+    ENDLOOP.
+  ENDIF.
   IF l_i_name IS NOT INITIAL.
     CALL FUNCTION 'READ_MULTIPLE_TEXTS'
       EXPORTING

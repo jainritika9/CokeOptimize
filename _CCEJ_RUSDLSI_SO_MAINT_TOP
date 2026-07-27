@@ -70,6 +70,22 @@
 * declarations (dead since MOD-020). No change to selection logic,     *
 * business calculations or ALV output.                                 *
 *----------------------------------------------------------------------*
+* Mod No.            : MOD-022                                         *
+* Date               : 27-Jul-2026                                     *
+* Change Description : SAT runtime comparison showed MOD-021 made the  *
+* report SLOWER than the original, not faster. Root cause: bulk        *
+* SELECT ... INTO TABLE into a SORTED TABLE inserts every fetched row  *
+* into its sorted position one at a time, which for the large VBAK/    *
+* VBAP/VBFA volumes this report handles is more expensive than an      *
+* unsorted bulk APPEND plus a single SORT. Reverted all MOD-021        *
+* SORTED TABLE declarations back to STANDARD TABLE (matching the       *
+* pre-MOD-021 declarations); the explicit SORT + READ TABLE ...        *
+* BINARY SEARCH pattern is restored in the SUB include. Kept the       *
+* MOD-021 changes that were not part of the regression (LIPS driving-  *
+* table de-duplication, CREATE OBJECT/CALL METHOD modernization,       *
+* removal of unused I_LIKP/I_VBRK). No change to selection logic,      *
+* business calculations or ALV output.                                 *
+*----------------------------------------------------------------------*
 *&---------------------------------------------------------------------*
 *&  Include           /CCEJ/RDSDSLSR_SO_MAINT_TOP
 *&---------------------------------------------------------------------*
@@ -401,66 +417,44 @@ FIELD-SYMBOLS : <fs_vbak> TYPE ty_vbak.                     "#EC NEEDED
 
 
 *-----Internal Table and work areas
-*-- MOD-021: Lookup tables that are bulk-selected once and then only
-*-- ever read via READ TABLE ... WITH KEY (BINARY SEARCH) are declared
-*-- as SORTED TABLE on their lookup key. This guarantees the table is
-*-- always in the order the key-based reads assume (impossible to read
-*-- before sorting) and removes the need for a separate SORT statement.
-*-- i_vbak/i_vbap/i_alv/i_final remain the primary driver/output
-*-- tables; i_alv/i_final stay STANDARD TABLE because their row order
-*-- (as appended during processing) is the ALV display order.
-DATA: i_vbak TYPE SORTED TABLE OF ty_vbak
-              WITH NON-UNIQUE KEY vbeln,                    "#EC NEEDED
+*-- MOD-022: MOD-021 had converted these lookup tables to SORTED
+*-- TABLE. SAT runtime comparison showed that was a net loss: bulk
+*-- SELECT ... INTO TABLE against a SORTED/HASHED table target has to
+*-- insert every fetched row into its sorted position individually,
+*-- which is slower than an unsorted bulk APPEND followed by one SORT
+*-- pass for the large volumes this report pulls (VBAK/VBAP/VBFA can
+*-- run into tens of thousands of rows). Reverted to STANDARD TABLE;
+*-- the SORT + READ TABLE ... BINARY SEARCH pattern (already in place
+*-- before MOD-021) is restored in the SUB include.
+DATA: i_vbak TYPE STANDARD TABLE OF ty_vbak,                "#EC NEEDED
       i_kschl TYPE STANDARD TABLE OF selopt,      "#EC NEEDED " MOD-001
       i_jdc_auart TYPE STANDARD TABLE OF selopt,  "#EC NEEDED " MOD-015
-      i_vbap TYPE SORTED TABLE OF ty_vbap
-              WITH NON-UNIQUE KEY vbeln posnr,              "#EC NEEDED
-      i_vbpa TYPE SORTED TABLE OF ty_vbpa
-              WITH NON-UNIQUE KEY vbeln parvw,              "#EC NEEDED
-      i_kna1 TYPE SORTED TABLE OF ty_kna1
-              WITH NON-UNIQUE KEY kunnr,                    "#EC NEEDED
+      i_vbap TYPE STANDARD TABLE OF ty_vbap,                "#EC NEEDED
+      i_vbpa TYPE STANDARD TABLE OF ty_vbpa,                "#EC NEEDED
+      i_kna1 TYPE STANDARD TABLE OF ty_kna1,                "#EC NEEDED
 **      BOC BY S172466 MOD-008 defect 3146
-      i_vbuv TYPE SORTED TABLE OF ty_vbuv
-              WITH NON-UNIQUE KEY vbeln posnr,              "#EC NEEDED
-      i_vbrp TYPE SORTED TABLE OF ty_vbrp
-              WITH NON-UNIQUE KEY vbeln posnr,              "#EC NEEDED
+      i_vbuv TYPE STANDARD TABLE OF ty_vbuv,                "#EC NEEDED
+      i_vbrp TYPE STANDARD TABLE OF ty_vbrp,                "#EC NEEDED
 **      EOC BY S172466 MOD-008 defect 3146
-      i_vbkd TYPE SORTED TABLE OF ty_vbkd
-              WITH NON-UNIQUE KEY vbeln,                    "#EC NEEDED
-      i_vbep TYPE SORTED TABLE OF ty_vbep
-              WITH NON-UNIQUE KEY vbeln posnr etenr,        "#EC NEEDED
-      i_vbup TYPE SORTED TABLE OF ty_vbup
-              WITH NON-UNIQUE KEY vbeln posnr,              "#EC NEEDED
-      i_makt TYPE SORTED TABLE OF ty_makt
-              WITH NON-UNIQUE KEY matnr,                    "#EC NEEDED
-      i_stxh TYPE SORTED TABLE OF ty_stxh
-              WITH NON-UNIQUE KEY tdobject tdname tdid tdspras,
-                                                    "#EC NEEDED" MOD-001
-      i_konv TYPE SORTED TABLE OF ty_konv
-              WITH NON-UNIQUE KEY knumv kposn kschl,
-                                                    "#EC NEEDED" MOD-001
-      i_a595 TYPE SORTED TABLE OF ty_a595
-              WITH NON-UNIQUE KEY knumh,           "#EC NEEDED" MOD-001
+      i_vbkd TYPE STANDARD TABLE OF ty_vbkd,                "#EC NEEDED
+      i_vbep TYPE STANDARD TABLE OF ty_vbep,                "#EC NEEDED
+      i_vbup TYPE STANDARD TABLE OF ty_vbup,                "#EC NEEDED
+      i_makt TYPE STANDARD TABLE OF ty_makt,                "#EC NEEDED
+      i_stxh TYPE STANDARD TABLE OF ty_stxh,       "#EC NEEDED" MOD-001
+      i_konv TYPE STANDARD TABLE OF ty_konv,       "#EC NEEDED" MOD-001
+      i_a595 TYPE STANDARD TABLE OF ty_a595,       "#EC NEEDED" MOD-001
       i_auth_werks TYPE STANDARD TABLE OF selopt,           "#EC NEEDED
       i_auth_bsark TYPE STANDARD TABLE OF selopt,           "#EC NEEDED
       i_auth_vkorg TYPE STANDARD TABLE OF selopt,           "#EC NEEDED
       i_alv        TYPE tb_alv,                             "#EC NEEDED
       i_final TYPE tb_alv,                                  "#EC NEEDED
       i_sel_orders TYPE STANDARD TABLE OF ty_final_sel,     "#EC NEEDED
-      i_knvv TYPE SORTED TABLE OF ty_knvv
-              WITH NON-UNIQUE KEY kunnr,           "#EC NEEDED" MOD-003
-      i_vbfa TYPE SORTED TABLE OF ty_vbfa
-              WITH NON-UNIQUE KEY vbelv vbtyp_n posnv posnn,
-                                                    "#EC NEEDED" MOD-003
-      i_vbfa_ship TYPE SORTED TABLE OF ty_vbfa
-              WITH NON-UNIQUE KEY vbelv vbtyp_n,   "#EC NEEDED" MOD-003
-      i_lips TYPE SORTED TABLE OF ty_lips
-              WITH NON-UNIQUE KEY vbeln posnr vgpos,
-                                                    "#EC NEEDED" MOD-003
-      i_vttk TYPE SORTED TABLE OF ty_vttk
-              WITH NON-UNIQUE KEY tknum,           "#EC NEEDED" MOD-003
-      i_t42 TYPE SORTED TABLE OF ty_t42
-              WITH NON-UNIQUE KEY zkzkunnrfnb,     "#EC NEEDED" MOD-019
+      i_knvv TYPE STANDARD TABLE OF ty_knvv,       "#EC NEEDED" MOD-003
+      i_vbfa TYPE STANDARD TABLE OF ty_vbfa,       "#EC NEEDED" MOD-003
+      i_vbfa_ship TYPE STANDARD TABLE OF ty_vbfa,  "#EC NEEDED" MOD-003
+      i_lips TYPE STANDARD TABLE OF ty_lips,       "#EC NEEDED" MOD-003
+      i_vttk TYPE STANDARD TABLE OF ty_vttk,       "#EC NEEDED" MOD-003
+      i_t42 TYPE STANDARD TABLE OF ty_t42,         "#EC NEEDED" MOD-019
 
 
 wa_variant   TYPE disvariant.

@@ -101,6 +101,26 @@
 * branches. No change to selection logic, business calculations or    *
 * ALV output.                                                          *
 *----------------------------------------------------------------------*
+* Mod No.            : MOD-023                                         *
+* Date               : 27-Jul-2026                                     *
+* Change Description : Replaced direct reads of MAKT, LIPS and VBRP    *
+* with the standard S/4HANA CDS interface views I_ProductDescription,  *
+* I_DeliveryDocumentItem and I_BillingDocumentItem respectively,       *
+* selecting the CDS field and aliasing it back to the original table   *
+* field name (AS matnr/maktx/vbeln/posnr/lfimg/vgpos/fkimg) so no      *
+* downstream code changed. VBAK/VBAP/KNA1/KNVV/VTTK were NOT           *
+* converted - they rely on client-specific append fields (KTEXT,       *
+* VSNMR_V, /SCL/ATWRT, /CCC/GEDATNR, /CCEJ/KNVV_ZKZDEAKBN,              *
+* /BEV1/RPFAR1) that standard CDS views do not expose. VBFA, VBEP,     *
+* VBPA, VBKD were left as direct table reads - no standard CDS view    *
+* could be confirmed with sufficient confidence for their exact        *
+* fields without Data Dictionary access.                               *
+* IMPORTANT: the view/field names below are based on the standard SAP *
+* S/4HANA Virtual Data Model and could NOT be verified against this    *
+* system's Data Dictionary from this session - verify in SE11/ADT and  *
+* adjust if needed before transporting. No change to selection logic, *
+* business calculations or ALV output is intended once confirmed.      *
+*----------------------------------------------------------------------*
 *&---------------------------------------------------------------------*
 *&  Include           /CCEJ/RDSDSLSR_SO_MAINT_SUB
 *&---------------------------------------------------------------------*
@@ -876,15 +896,20 @@ FROM V_KONV_CDS
           SORT l_i_vbfa_lips BY vbeln posnn.
           DELETE ADJACENT DUPLICATES FROM l_i_vbfa_lips
                                      COMPARING vbeln posnn.
-          SELECT vbeln
-          posnr
-          lfimg
-          vgpos
-          FROM lips
+*         MOD-023: CDS view I_DeliveryDocumentItem instead of direct
+*         LIPS access; fields aliased back to the original LIPS names.
+*         REFERENCESDDOCUMENTITEM is the least certain field name of
+*         this set - verify all view/field names in SE11 before
+*         transport.
+          SELECT deliverydocument        AS vbeln
+          deliverydocumentitem           AS posnr
+          actualdeliveryquantity         AS lfimg
+          referencesddocumentitem        AS vgpos
+          FROM i_deliverydocumentitem
           INTO TABLE i_lips
           FOR ALL ENTRIES IN l_i_vbfa_lips
-          WHERE vbeln = l_i_vbfa_lips-vbeln
-          AND posnr = l_i_vbfa_lips-posnn.
+          WHERE deliverydocument = l_i_vbfa_lips-vbeln
+          AND deliverydocumentitem = l_i_vbfa_lips-posnn.
           IF sy-subrc IS NOT INITIAL.
             CLEAR:i_lips[].
           ENDIF.
@@ -1081,13 +1106,17 @@ FROM V_KONV_CDS
       SORT l_i_vbap BY matnr.
       DELETE ADJACENT DUPLICATES FROM l_i_vbap COMPARING matnr.
       IF l_i_vbap[] IS NOT INITIAL.
-        SELECT matnr
-               maktx
-            FROM makt
+*       MOD-023: CDS view I_ProductDescription instead of direct MAKT
+*       access; fields aliased back to the original MAKT names so
+*       nothing downstream changes. Verify view/field names in SE11
+*       before transport.
+        SELECT product            AS matnr
+               productdescription AS maktx
+            FROM i_productdescription
           INTO TABLE i_makt
           FOR ALL ENTRIES IN l_i_vbap
-          WHERE matnr = l_i_vbap-matnr
-          AND   spras = sy-langu.
+          WHERE product  = l_i_vbap-matnr
+          AND   language = sy-langu.
         IF sy-subrc IS NOT INITIAL.
           CLEAR: i_makt[].
         ENDIF.
@@ -1186,15 +1215,20 @@ FROM V_KONV_CDS
 *          SORT i_vbrk BY vbeln.
 *End of comment MOD-020
 *     Get Invoice item details
-        SELECT vbeln posnr fkimg
-         FROM vbrp INTO TABLE i_vbrp
+*       MOD-023: CDS view I_BillingDocumentItem instead of direct
+*       VBRP access; fields aliased back to the original VBRP names.
+*       Verify view/field names in SE11 before transport.
+        SELECT billingdocument AS vbeln
+               billingdocumentitem AS posnr
+               billingquantity AS fkimg
+         FROM i_billingdocumentitem INTO TABLE i_vbrp
 *Bgein of comment MOD-020
 *            FOR ALL ENTRIES IN i_vbrk
 *            WHERE vbeln = i_vbrk-vbeln.
 *End of comment MOD-020
 *Begin of insert MOD-020
          FOR ALL ENTRIES IN l_i_vbfa
-         WHERE vbeln = l_i_vbfa-vbeln.
+         WHERE billingdocument = l_i_vbfa-vbeln.
 *End of insert MOD-020
         IF sy-subrc IS INITIAL.
           SORT i_vbrp BY vbeln posnr.
@@ -3811,14 +3845,17 @@ FORM f_f4_help  USING      fp_sb TYPE dynfnam.
 
   IF sy-subrc IS INITIAL AND l_i_wtaddi[] IS NOT INITIAL.
     " get subcode description
-    SELECT matnr
-           spras
-           maktx
-     FROM makt
+*   MOD-023: CDS view I_ProductDescription instead of direct MAKT
+*   access; fields aliased back to the original MAKT names. Verify
+*   view/field names in SE11 before transport.
+    SELECT product            AS matnr
+           language           AS spras
+           productdescription AS maktx
+     FROM i_productdescription
      INTO TABLE l_i_makt
      FOR ALL ENTRIES IN l_i_wtaddi
-     WHERE matnr = l_i_wtaddi-addimat
-      AND spras = sy-langu.
+     WHERE product  = l_i_wtaddi-addimat
+      AND language = sy-langu.
 
     IF sy-subrc IS INITIAL.
       SORT l_i_makt BY matnr.

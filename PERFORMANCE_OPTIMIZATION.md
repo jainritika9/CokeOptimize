@@ -6,7 +6,7 @@
 **Objective:** Resolve a runtime timeout without changing selection logic, business calculations, or ALV output.
 **Repository:** [jainritika9/CokeOptimize](https://github.com/jainritika9/CokeOptimize)
 
-This document summarizes the changes applied across two rounds (MOD-021, MOD-022 in the source modification logs). It is a summary/index — the authoritative, line-level record is the modification-log block at the top of each changed include and the git history in this repo.
+This document summarizes the changes applied across three rounds (MOD-021, MOD-022, MOD-023 in the source modification logs). It is a summary/index — the authoritative, line-level record is the modification-log block at the top of each changed include and the git history in this repo.
 
 ## Files changed
 
@@ -50,6 +50,36 @@ The user compared old vs. new runtime via transaction **SAT** and found the MOD-
 
 All are populated once via a single `SELECT ... INTO TABLE`, sorted with an explicit `SORT` immediately after, and read only via `READ TABLE ... WITH KEY ... BINARY SEARCH` — the standard, and for this workload the fastest, ABAP "bulk-load-then-lookup" pattern.
 
+## Round 3 — MOD-023 CDS view adoption (commit `99b9a7f`)
+
+Requested follow-up: replace direct table reads with CDS views in the SUB include (Clean Core alignment), keeping the CDS field aliased back to the original table field name so no downstream code changes.
+
+**Before converting anything, the field lists of the highest-volume tables were checked against the TOP include's type definitions.** `VBAK`, `VBAP`, `KNA1`, `KNVV` and `VTTK` all select client-specific (or SAP industry-solution-specific) append fields that a standard CDS view does not expose:
+
+| Table | Custom field required | Why it blocks conversion |
+|---|---|---|
+| `VBAK` | `KTEXT`, `VSNMR_V` | Not standard VBAK fields — client append structure |
+| `VBAP` | `/SCL/ATWRT` | Custom append field |
+| `KNA1` | `/CCC/GEDATNR` | Custom append field ("Bottler Account group code") |
+| `KNVV` | `/CCEJ/KNVV_ZKZDEAKBN` | Custom append field ("Trading division") |
+| `VTTK` | `/BEV1/RPFAR1` | SAP IS-Beverage industry field, not in generic Transportation CDS views |
+
+A standard-delivered CDS view only exposes SAP-standard fields, so converting these five tables would either fail to activate (field not found on the view) or force dropping the field — the latter would silently change business output, which is out of scope. **These five tables — including the two highest-volume ones, VBAK and VBAP — were therefore left as direct table reads.**
+
+Of the remaining tables, three had select lists using only fields a well-known standard S/4HANA Virtual Data Model (VDM) interface view is expected to expose:
+
+| # | Table | Replaced with | Notes |
+|---|---|---|---|
+| 1 | `MAKT` (2 call sites: `f_get_data`, `f_f4_help`) | `I_ProductDescription` | Fields aliased: `PRODUCT AS matnr`, `LANGUAGE AS spras` (2nd site only), `PRODUCTDESCRIPTION AS maktx` |
+| 2 | `LIPS` | `I_DeliveryDocumentItem` | Fields aliased: `DELIVERYDOCUMENT AS vbeln`, `DELIVERYDOCUMENTITEM AS posnr`, `ACTUALDELIVERYQUANTITY AS lfimg`, `REFERENCESDDOCUMENTITEM AS vgpos` (this last field name is the least certain of the set) |
+| 3 | `VBRP` | `I_BillingDocumentItem` | Fields aliased: `BILLINGDOCUMENT AS vbeln`, `BILLINGDOCUMENTITEM AS posnr`, `BILLINGQUANTITY AS fkimg` |
+
+`VBFA`, `VBEP`, `VBPA`, `VBKD` were also candidates by field list, but were **not** converted — I could not confirm a specific standard CDS view name/field mapping for them with enough confidence to risk it (in particular, `VBFA`'s preceding/subsequent document semantics are easy to map backwards, which would be a silent logic bug, not a compile error).
+
+**Important caveats — read before transporting:**
+- The view and field names above are based on general knowledge of the standard SAP S/4HANA VDM. They were **not verified against this system's Data Dictionary** (no SE11/ADT access from this session). Confirm each view and field name exists exactly as written — an activation error here is expected and safe (it fails loudly at activation, not silently at runtime); a wrong-but-existing field would be the real risk, so double-check the semantics, not just that it compiles.
+- Even once confirmed correct, these three queries were already lean, indexed, `FOR ALL ENTRIES`-based point lookups — a basic/interface CDS view without extra associations should perform comparably, but this change is primarily about Clean Core alignment (reading through the released VDM interface instead of the base table), not a guaranteed large runtime reduction on its own. Re-measure with SAT rather than assuming a win.
+
 ## Intentionally left unchanged
 
 A few areas were reviewed and deliberately **not** touched, because a change could not be verified as 100% output-preserving without a live SAP system to test against:
@@ -68,9 +98,10 @@ A few areas were reviewed and deliberately **not** touched, because a change cou
 
 ## Recommended next steps (for the SAP-side reviewer)
 
-1. Re-run SAT (or ST12/ST05 trace) on this version against the same test data/selection used for the original comparison, and confirm runtime is now at or below the original program's.
-2. Functional regression test in QA: run the report for a representative selection and diff the ALV output field-by-field against the pre-optimization version (no business logic was changed, so output should be identical).
-3. Transport through the normal change-management process; record the transport number against MOD-021/MOD-022 in the source modification logs once assigned.
+1. **Before anything else:** open each of `I_ProductDescription`, `I_DeliveryDocumentItem`, `I_BillingDocumentItem` in SE11/ADT and confirm the view name and every aliased field (`PRODUCT`, `LANGUAGE`, `PRODUCTDESCRIPTION`, `DELIVERYDOCUMENT`, `DELIVERYDOCUMENTITEM`, `ACTUALDELIVERYQUANTITY`, `REFERENCESDDOCUMENTITEM`, `BILLINGDOCUMENT`, `BILLINGDOCUMENTITEM`, `BILLINGQUANTITY`) actually exists with those names in this system before attempting activation.
+2. Re-run SAT (or ST12/ST05 trace) on this version against the same test data/selection used for the original comparison, and confirm runtime is now at or below the original program's — including after the MOD-023 CDS view change, which is not guaranteed to be a net speed win on its own (see caveats above).
+3. Functional regression test in QA: run the report for a representative selection and diff the ALV output field-by-field against the pre-optimization version (no business logic was changed, so output should be identical).
+4. Transport through the normal change-management process; record the transport number against MOD-021/MOD-022/MOD-023 in the source modification logs once assigned.
 
 ## Commit history
 
@@ -79,3 +110,4 @@ A few areas were reviewed and deliberately **not** touched, because a change cou
 | `57315ba` | Initial upload of the original source files |
 | `ac005f9` | MOD-021 — first optimization pass |
 | `28de371` | MOD-022 — SAT-driven correction of the MOD-021 regression, plus loop-SELECT hoist |
+| `99b9a7f` | MOD-023 — replaced MAKT/LIPS/VBRP direct reads with CDS views |
